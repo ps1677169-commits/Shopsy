@@ -8,6 +8,7 @@ CREDITS
 ================================================================
 Made with ❤️ by @hey_berlin
 Version: 1.1.0
+Repository: https://github.com/YOUR_USERNAME/shopsy-farm-bot
 ================================================================
 """
 import os
@@ -206,21 +207,30 @@ class ShopsyClient:
     def request_otp(self) -> Dict:
         url = f"{self._get_host()}/api/v1/auth/otp"
         payload = {"phone": self.phone}
-        resp = self._request("POST", url, json=payload)
-        return resp.json()
+        try:
+            resp = self._request("POST", url, json=payload)
+            return resp.json()
+        except Exception as e:
+            logger.error(f"OTP request error: {e}")
+            return {"success": False, "message": str(e)}
 
     def verify_otp(self, otp: str) -> Dict:
         url = f"{self._get_host()}/api/v1/auth/login"
         payload = {"phone": self.phone, "otp": otp}
-        resp = self._request("POST", url, json=payload)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("success"):
-                self.cookie = data.get("cookie")
-                self.vid = data.get("vid")
-                self.dc = data.get("dc", 1)
-                self.logged_in = True
-        return resp.json()
+        try:
+            resp = self._request("POST", url, json=payload)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("success"):
+                    self.cookie = data.get("cookie")
+                    self.vid = data.get("vid")
+                    self.dc = data.get("dc", 1)
+                    self.logged_in = True
+                return data
+            return {"success": False, "message": f"HTTP {resp.status_code}"}
+        except Exception as e:
+            logger.error(f"OTP verification error: {e}")
+            return {"success": False, "message": str(e)}
 
     def get_profile(self) -> Dict:
         url = f"{self._get_host()}/api/v1/user/profile"
@@ -661,9 +671,22 @@ async def button_handler(update: Update, context):
 async def phone_input(update: Update, context):
     logger.info(f"📱 Phone input received: {update.message.text}")
     phone = update.message.text.strip()
-    if not phone.startswith("+") or len(phone) < 10:
+    
+    # Clean phone number
+    phone = ''.join(filter(str.isdigit, phone))
+    if len(phone) == 10:
+        phone = "+91" + phone
+    elif len(phone) == 11 and phone.startswith("0"):
+        phone = "+91" + phone[1:]
+    elif not phone.startswith("+"):
+        phone = "+" + phone
+    
+    logger.info(f"📱 Cleaned phone: {phone}")
+    
+    if len(phone) < 10:
         await safe_send(update, "❌ Invalid phone. Use format: <code>+919890902059</code>", parse_mode="HTML")
         return ConversationHandler.END
+    
     conn = get_conn()
     c = conn.cursor()
     c.execute("SELECT id FROM accounts WHERE phone = ?", (phone,))
@@ -672,16 +695,26 @@ async def phone_input(update: Update, context):
     if exists:
         await safe_send(update, "❌ This phone is already added.", parse_mode="HTML")
         return ConversationHandler.END
+    
     client = ShopsyClient(phone)
     logger.info(f"📤 Requesting OTP for {phone}")
-    resp = client.request_otp()
-    logger.info(f"📥 OTP response: {resp}")
+    
+    try:
+        resp = client.request_otp()
+        logger.info(f"📥 OTP response: {json.dumps(resp, indent=2)}")
+    except Exception as e:
+        logger.error(f"❌ OTP request error: {e}")
+        await safe_send(update, f"❌ OTP request failed: {str(e)}\n\nPlease try again later.", parse_mode="HTML")
+        return ConversationHandler.END
+    
     if resp.get("success"):
         pending_otp[phone] = (client, resp.get("requestId"))
         await safe_send(update, f"✅ OTP sent to <code>{phone}</code>\nSend the 6-digit OTP.", parse_mode="HTML")
         return OTP
     else:
-        await safe_send(update, f"❌ Failed: {resp.get('message', 'Unknown error')}", parse_mode="HTML")
+        error_msg = resp.get('message', 'Unknown error')
+        logger.error(f"❌ OTP request failed: {error_msg}")
+        await safe_send(update, f"❌ Failed to send OTP: {error_msg}\n\nMake sure the phone number is correct.", parse_mode="HTML")
         return ConversationHandler.END
 
 async def otp_input(update: Update, context):
@@ -690,21 +723,33 @@ async def otp_input(update: Update, context):
     if len(otp) != 6 or not otp.isdigit():
         await safe_send(update, "❌ Invalid OTP. Enter 6 digits.", parse_mode="HTML")
         return OTP
+    
+    # Find the phone number associated with this OTP
     phone = None
     for p, (client, _) in pending_otp.items():
         if client.phone:
             phone = p
             break
+    
     if not phone:
         await safe_send(update, "❌ No pending OTP. Start with /start", parse_mode="HTML")
         return ConversationHandler.END
+    
     client, _ = pending_otp.pop(phone, (None, None))
     if not client:
         await safe_send(update, "❌ Session expired.", parse_mode="HTML")
         return ConversationHandler.END
+    
     logger.info(f"🔐 Verifying OTP for {phone}")
-    resp = client.verify_otp(otp)
-    logger.info(f"✅ Verification response: {resp}")
+    
+    try:
+        resp = client.verify_otp(otp)
+        logger.info(f"✅ Verification response: {json.dumps(resp, indent=2)}")
+    except Exception as e:
+        logger.error(f"❌ OTP verification error: {e}")
+        await safe_send(update, f"❌ OTP verification failed: {str(e)}", parse_mode="HTML")
+        return ConversationHandler.END
+    
     if resp.get("success"):
         conn = get_conn()
         c = conn.cursor()
@@ -718,8 +763,77 @@ async def otp_input(update: Update, context):
         log_action(acc_id, "ADD", "Account added")
         await safe_send(update, f"✅ <b>Account added!</b>\n📱 <code>{phone}</code>\n👤 {resp.get('name', 'User')}", parse_mode="HTML")
     else:
-        await safe_send(update, f"❌ OTP failed: {resp.get('message', 'Unknown error')}", parse_mode="HTML")
+        error_msg = resp.get('message', 'Unknown error')
+        await safe_send(update, f"❌ OTP failed: {error_msg}", parse_mode="HTML")
+    
     return ConversationHandler.END
+
+async def otp_fallback(update: Update, context):
+    """Manual OTP entry fallback command."""
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text(
+            "📱 **Manual OTP Entry**\n\n"
+            "Usage: `/otp <phone> <otp>`\n"
+            "Example: `/otp +917008733564 123456`\n\n"
+            "Phone must include country code.",
+            parse_mode="Markdown"
+        )
+        return
+    
+    phone = args[0]
+    otp = args[1]
+    
+    # Clean phone
+    if not phone.startswith("+"):
+        phone = "+" + phone
+    
+    if len(otp) != 6 or not otp.isdigit():
+        await update.message.reply_text("❌ Invalid OTP. Must be 6 digits.")
+        return
+    
+    logger.info(f"📱 Manual OTP for {phone}")
+    
+    # Check if account exists
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT id FROM accounts WHERE phone = ?", (phone,))
+    exists = c.fetchone()
+    conn.close()
+    if exists:
+        await update.message.reply_text("❌ This phone is already added.")
+        return
+    
+    # Create client and verify
+    client = ShopsyClient(phone)
+    try:
+        resp = client.verify_otp(otp)
+        logger.info(f"📥 Manual verification response: {json.dumps(resp, indent=2)}")
+    except Exception as e:
+        logger.error(f"❌ Manual OTP verification error: {e}")
+        await update.message.reply_text(f"❌ Verification failed: {str(e)}")
+        return
+    
+    if resp.get("success"):
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO accounts (phone, cookie, vid, dc, name) VALUES (?, ?, ?, ?, ?)",
+            (phone, client.cookie, client.vid, client.dc, resp.get('name', 'User'))
+        )
+        acc_id = c.lastrowid
+        conn.commit()
+        conn.close()
+        log_action(acc_id, "ADD", "Account added via /otp fallback")
+        await update.message.reply_text(
+            f"✅ **Account added successfully!**\n\n"
+            f"📱 `{phone}`\n"
+            f"👤 {resp.get('name', 'User')}",
+            parse_mode="Markdown"
+        )
+    else:
+        error_msg = resp.get('message', 'Unknown error')
+        await update.message.reply_text(f"❌ OTP failed: {error_msg}")
 
 async def file_input(update: Update, context):
     document = update.message.document
@@ -813,6 +927,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
     app.add_handler(CommandHandler("credits", credits_command))
+    app.add_handler(CommandHandler("otp", otp_fallback))  # <-- Manual OTP fallback
 
     # 2. Callback query handler - THIS MUST BE BEFORE CONVERSATION HANDLER
     app.add_handler(CallbackQueryHandler(button_handler))
