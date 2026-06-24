@@ -317,6 +317,24 @@ pending_otp = {}
 pending_delete = {}
 PHONE, OTP, DELETE_CONFIRM = range(3)
 
+async def safe_send(update: Update, text: str, reply_markup=None, parse_mode="HTML"):
+    """Safely send message with fallback to plain text."""
+    try:
+        if reply_markup:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+        else:
+            await update.message.reply_text(text, parse_mode=parse_mode)
+    except Exception as e:
+        logger.error(f"Failed to send with {parse_mode}: {e}")
+        try:
+            # Try without parse_mode
+            if reply_markup:
+                await update.message.reply_text(text, reply_markup=reply_markup)
+            else:
+                await update.message.reply_text(text)
+        except Exception as e2:
+            logger.error(f"Failed to send plain text: {e2}")
+
 async def start(update: Update, context):
     keyboard = [
         [InlineKeyboardButton("➕ Add Account", callback_data="add_account")],
@@ -329,27 +347,26 @@ async def start(update: Update, context):
         [InlineKeyboardButton("📈 Credits", callback_data="credits")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "🛒 **Shopsy SuperCoin Farm Bot**\n\n"
+    text = (
+        "🛒 <b>Shopsy SuperCoin Farm Bot</b>\n\n"
         "Earn coins automatically by playing mini-games.\n"
         "Add your Shopsy account and start farming!\n\n"
-        f"🌐 Proxy: **✅ Auto-Rotating ({len(PROXY_POOL)} proxies)**\n"
-        f"📈 **Developed by: {AUTHOR}**",
-        reply_markup=reply_markup,
-        parse_mode="Markdown"
+        f"🌐 Proxy: <b>✅ Auto-Rotating ({len(PROXY_POOL)} proxies)</b>\n"
+        f"📈 <b>Developed by: {AUTHOR}</b>"
     )
+    await safe_send(update, text, reply_markup, "HTML")
 
 async def credits_command(update: Update, context):
-    await update.message.reply_text(
-        f"📈 **Credits**\n\n"
-        f"**Bot:** Shopsy SuperCoin Farm Bot\n"
-        f"**Version:** {VERSION}\n"
-        f"**Developer:** {AUTHOR}\n"
-        f"**Special Thanks:** The Shopsy community, early testers, and contributors.\n\n"
-        f"🔗 **Repo:** [GitHub](https://github.com/YOUR_USERNAME/shopsy-farm-bot)\n\n"
-        f"💡 If you like this bot, consider starring the repo!",
-        parse_mode="Markdown"
+    text = (
+        f"📈 <b>Credits</b>\n\n"
+        f"<b>Bot:</b> Shopsy SuperCoin Farm Bot\n"
+        f"<b>Version:</b> {VERSION}\n"
+        f"<b>Developer:</b> {AUTHOR}\n"
+        f"<b>Special Thanks:</b> The Shopsy community, early testers, and contributors.\n\n"
+        f"🔗 <b>Repo:</b> <a href='https://github.com/YOUR_USERNAME/shopsy-farm-bot'>GitHub</a>\n\n"
+        f"💡 If you like this bot, consider starring the repo!"
     )
+    await safe_send(update, text, None, "HTML")
 
 async def button_handler(update: Update, context):
     query = update.callback_query
@@ -358,28 +375,30 @@ async def button_handler(update: Update, context):
     user_id = update.effective_user.id
 
     if data == "credits":
-        await query.message.reply_text(
-            f"📈 **Credits**\n\n"
-            f"**Bot:** Shopsy SuperCoin Farm Bot\n"
-            f"**Version:** {VERSION}\n"
-            f"**Developer:** {AUTHOR}\n"
-            f"**Special Thanks:** The Shopsy community, early testers, and contributors.\n\n"
-            f"🔗 **Repo:** [GitHub](https://github.com/YOUR_USERNAME/shopsy-farm-bot)\n\n"
-            f"💡 If you like this bot, consider starring the repo!",
-            parse_mode="Markdown"
+        text = (
+            f"📈 <b>Credits</b>\n\n"
+            f"<b>Bot:</b> Shopsy SuperCoin Farm Bot\n"
+            f"<b>Version:</b> {VERSION}\n"
+            f"<b>Developer:</b> {AUTHOR}\n"
+            f"<b>Special Thanks:</b> The Shopsy community, early testers, and contributors.\n\n"
+            f"🔗 <b>Repo:</b> <a href='https://github.com/YOUR_USERNAME/shopsy-farm-bot'>GitHub</a>\n\n"
+            f"💡 If you like this bot, consider starring the repo!"
         )
+        await safe_send(update, text, None, "HTML")
         return
 
+    # ========== ADD ACCOUNT ==========
     if data == "add_account":
-        await query.message.reply_text(
-            "📱 **Add Account**\n\n"
+        text = (
+            "📱 <b>Add Account</b>\n\n"
             "Send your phone number with country code:\n"
-            "`+919890902059`\n\n"
-            "Or upload a JSON file with multiple accounts.",
-            parse_mode="Markdown"
+            "<code>+919890902059</code>\n\n"
+            "Or upload a JSON file with multiple accounts."
         )
+        await safe_send(update, text, None, "HTML")
         return PHONE
 
+    # ========== LIST ACCOUNTS ==========
     elif data == "list_accounts":
         conn = get_conn()
         c = conn.cursor()
@@ -387,13 +406,13 @@ async def button_handler(update: Update, context):
         rows = c.fetchall()
         conn.close()
         if not rows:
-            await query.message.reply_text("No accounts added yet.")
+            await safe_send(update, "No accounts added yet.", None, "HTML")
             return
-        msg = "📋 **Your Accounts**\n\n"
+        msg = "<b>📋 Your Accounts</b>\n\n"
         for row in rows:
             status = "🟢 Active" if row[5] else "🔴 Inactive"
             msg += (
-                f"`{row[1]}` – **{row[2]}**\n"
+                f"<code>{row[1]}</code> – <b>{row[2]}</b>\n"
                 f"  💰 Total: {row[3]} | Today: {row[4]}\n"
                 f"  📈 Lifetime: {row[6]}\n"
                 f"  {status}\n\n"
@@ -407,8 +426,9 @@ async def button_handler(update: Update, context):
             ])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back")])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.reply_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
+        await safe_send(update, msg, reply_markup, "HTML")
 
+    # ========== FARM SINGLE ==========
     elif data.startswith("farm_"):
         acc_id = int(data.split("_")[1])
         conn = get_conn()
@@ -417,9 +437,9 @@ async def button_handler(update: Update, context):
         row = c.fetchone()
         conn.close()
         if not row:
-            await query.message.reply_text("❌ Account not found or inactive.")
+            await safe_send(update, "❌ Account not found or inactive.", None, "HTML")
             return
-        await query.message.reply_text(f"🎮 Farming **{row[4]}**...")
+        await safe_send(update, f"🎮 Farming <b>{row[4]}</b>...", None, "HTML")
         client = ShopsyClient(row[0], row[1], row[2], row[3])
         engine = FarmEngine(client, get_setting('mode', 'FAST'))
         result = await engine.farm()
@@ -432,13 +452,11 @@ async def button_handler(update: Update, context):
             )
             conn.commit()
             conn.close()
-            await query.message.reply_text(
-                f"✅ {row[4]} – earned {result['coins']} coins\n"
-                f"{result['details']}"
-            )
+            await safe_send(update, f"✅ {row[4]} – earned {result['coins']} coins\n{result['details']}", None, "HTML")
         else:
-            await query.message.reply_text(f"❌ Failed: {result['status']}")
+            await safe_send(update, f"❌ Failed: {result['status']}", None, "HTML")
 
+    # ========== TOGGLE ACCOUNT ==========
     elif data.startswith("toggle_"):
         acc_id = int(data.split("_")[1])
         conn = get_conn()
@@ -450,9 +468,10 @@ async def button_handler(update: Update, context):
             c.execute("UPDATE accounts SET active = ? WHERE id = ?", (new_status, acc_id))
             conn.commit()
         conn.close()
-        await query.message.reply_text(f"✅ Account {'activated' if new_status else 'paused'}.")
+        await safe_send(update, f"✅ Account {'activated' if new_status else 'paused'}.", None, "HTML")
         await button_handler(update, context)
 
+    # ========== DELETE ACCOUNT ==========
     elif data.startswith("delete_"):
         acc_id = int(data.split("_")[1])
         pending_delete[user_id] = acc_id
@@ -461,7 +480,7 @@ async def button_handler(update: Update, context):
             [InlineKeyboardButton("❌ Cancel", callback_data="back")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.reply_text("⚠️ **Delete this account?** This cannot be undone.", reply_markup=reply_markup, parse_mode="Markdown")
+        await safe_send(update, "⚠️ <b>Delete this account?</b> This cannot be undone.", reply_markup, "HTML")
         return DELETE_CONFIRM
 
     elif data == "confirm_delete":
@@ -472,11 +491,12 @@ async def button_handler(update: Update, context):
             c.execute("DELETE FROM accounts WHERE id = ?", (acc_id,))
             conn.commit()
             conn.close()
-            await query.message.reply_text("🗑️ Account deleted.")
+            await safe_send(update, "🗑️ Account deleted.", None, "HTML")
         else:
-            await query.message.reply_text("No account to delete.")
+            await safe_send(update, "No account to delete.", None, "HTML")
         await button_handler(update, context)
 
+    # ========== FARM ALL ==========
     elif data == "farm_all":
         conn = get_conn()
         c = conn.cursor()
@@ -484,9 +504,9 @@ async def button_handler(update: Update, context):
         accounts = c.fetchall()
         conn.close()
         if not accounts:
-            await query.message.reply_text("No active accounts. Add one first.")
+            await safe_send(update, "No active accounts. Add one first.", None, "HTML")
             return
-        msg = await query.message.reply_text("🚀 **Farming all accounts...**")
+        msg = await update.message.reply_text("🚀 <b>Farming all accounts...</b>", parse_mode="HTML")
         total_coins = 0
         results = []
         for acc in accounts:
@@ -507,11 +527,13 @@ async def button_handler(update: Update, context):
             else:
                 results.append(f"❌ {acc[5]}: {result['status']}")
         await msg.edit_text(
-            f"🏁 **Farming complete!**\n"
+            f"🏁 <b>Farming complete!</b>\n"
             f"Total coins earned: {total_coins}\n\n"
-            + "\n".join(results)
+            + "\n".join(results),
+            parse_mode="HTML"
         )
 
+    # ========== STATS ==========
     elif data == "stats":
         conn = get_conn()
         c = conn.cursor()
@@ -526,14 +548,18 @@ async def button_handler(update: Update, context):
         c.execute("SELECT SUM(total_earned) FROM accounts")
         lifetime = c.fetchone()[0] or 0
         conn.close()
-        await query.message.reply_text(
-            f"📊 **Stats**\n\n"
+        await safe_send(
+            update,
+            f"📊 <b>Stats</b>\n\n"
             f"👤 Active accounts: {active}/{total_acc}\n"
             f"💰 Total coins: {total}\n"
             f"📈 Earned today: {today}\n"
-            f"🏆 Lifetime earnings: {lifetime}"
+            f"🏆 Lifetime earnings: {lifetime}",
+            None,
+            "HTML"
         )
 
+    # ========== SETTINGS ==========
     elif data == "settings":
         current_mode = get_setting('mode', 'FAST')
         auto_farm = get_setting('auto_farm', '0')
@@ -544,32 +570,35 @@ async def button_handler(update: Update, context):
             [InlineKeyboardButton("🔙 Back", callback_data="back")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.reply_text("⚙️ **Settings**", reply_markup=reply_markup, parse_mode="Markdown")
+        await safe_send(update, "⚙️ <b>Settings</b>", reply_markup, "HTML")
 
     elif data == "toggle_mode":
         modes = ["FAST", "NORMAL", "SLOW"]
         current = get_setting('mode', 'FAST')
         next_mode = modes[(modes.index(current) + 1) % len(modes)]
         set_setting('mode', next_mode)
-        await query.message.reply_text(f"✅ Mode changed to: **{next_mode}**")
+        await safe_send(update, f"✅ Mode changed to: <b>{next_mode}</b>", None, "HTML")
         await button_handler(update, context)
 
     elif data == "toggle_auto":
         current = get_setting('auto_farm', '0')
         new = '1' if current == '0' else '0'
         set_setting('auto_farm', new)
-        await query.message.reply_text(f"🔄 Auto-farm {'enabled' if new == '1' else 'disabled'}.")
+        await safe_send(update, f"🔄 Auto-farm {'enabled' if new == '1' else 'disabled'}.", None, "HTML")
         await button_handler(update, context)
 
     elif data == "set_interval":
-        await query.message.reply_text(
-            "📅 **Set Auto-Farm Interval**\n\n"
-            "Send the number of hours (e.g., `2` for every 2 hours).\n"
+        await safe_send(
+            update,
+            "📅 <b>Set Auto-Farm Interval</b>\n\n"
+            "Send the number of hours (e.g., <code>2</code> for every 2 hours).\n"
             "Minimum 1 hour, maximum 24 hours.",
-            parse_mode="Markdown"
+            None,
+            "HTML"
         )
         return ConversationHandler.ENTER_INTERVAL
 
+    # ========== EXPORT / IMPORT ==========
     elif data == "export_import":
         keyboard = [
             [InlineKeyboardButton("📤 Export Accounts", callback_data="export")],
@@ -577,7 +606,7 @@ async def button_handler(update: Update, context):
             [InlineKeyboardButton("🔙 Back", callback_data="back")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.reply_text("📤 **Export / Import**", reply_markup=reply_markup, parse_mode="Markdown")
+        await safe_send(update, "📤 <b>Export / Import</b>", reply_markup, "HTML")
 
     elif data == "export":
         conn = get_conn()
@@ -586,25 +615,28 @@ async def button_handler(update: Update, context):
         rows = c.fetchall()
         conn.close()
         if not rows:
-            await query.message.reply_text("No accounts to export.")
+            await safe_send(update, "No accounts to export.", None, "HTML")
             return
         data = [{"phone": r[0], "cookie": r[1], "vid": r[2], "dc": r[3], "name": r[4]} for r in rows]
         with open("accounts_export.json", "w") as f:
             json.dump(data, f, indent=2)
-        await query.message.reply_document(
+        await update.message.reply_document(
             document=open("accounts_export.json", "rb"),
             filename=f"accounts_{datetime.now().strftime('%Y%m%d')}.json"
         )
 
     elif data == "import":
-        await query.message.reply_text(
-            "📥 **Import Accounts**\n\n"
+        await safe_send(
+            update,
+            "📥 <b>Import Accounts</b>\n\n"
             "Send a JSON file in this format:\n"
-            "`[{\"phone\": \"+91...\", \"cookie\": \"...\", \"vid\": \"...\", \"dc\": 1, \"name\": \"User\"}]`",
-            parse_mode="Markdown"
+            "<code>[{\"phone\": \"+91...\", \"cookie\": \"...\", \"vid\": \"...\", \"dc\": 1, \"name\": \"User\"}]</code>",
+            None,
+            "HTML"
         )
         return ConversationHandler.ENTER_IMPORT
 
+    # ========== LOGS ==========
     elif data == "logs":
         conn = get_conn()
         c = conn.cursor()
@@ -616,13 +648,14 @@ async def button_handler(update: Update, context):
         rows = c.fetchall()
         conn.close()
         if not rows:
-            await query.message.reply_text("No logs yet.")
+            await safe_send(update, "No logs yet.", None, "HTML")
             return
-        msg = "📜 **Recent Logs**\n\n"
+        msg = "📜 <b>Recent Logs</b>\n\n"
         for row in rows:
-            msg += f"`{row[0]}` – {row[1]}: {row[2][:30]}\n  {row[3][:16]}\n\n"
-        await query.message.reply_text(msg, parse_mode="Markdown")
+            msg += f"<code>{row[0]}</code> – {row[1]}: {row[2][:30]}\n  {row[3][:16]}\n\n"
+        await safe_send(update, msg, None, "HTML")
 
+    # ========== BACK ==========
     elif data == "back":
         await start(update, context)
 
@@ -632,7 +665,7 @@ async def button_handler(update: Update, context):
 async def phone_input(update: Update, context):
     phone = update.message.text.strip()
     if not phone.startswith("+") or len(phone) < 10:
-        await update.message.reply_text("❌ Invalid phone. Use format: `+919890902059`", parse_mode="Markdown")
+        await safe_send(update, "❌ Invalid phone. Use format: <code>+919890902059</code>", None, "HTML")
         return ConversationHandler.END
     conn = get_conn()
     c = conn.cursor()
@@ -640,22 +673,22 @@ async def phone_input(update: Update, context):
     exists = c.fetchone()
     conn.close()
     if exists:
-        await update.message.reply_text("❌ This phone is already added.")
+        await safe_send(update, "❌ This phone is already added.", None, "HTML")
         return ConversationHandler.END
     client = ShopsyClient(phone)
     resp = client.request_otp()
     if resp.get("success"):
         pending_otp[phone] = (client, resp.get("requestId"))
-        await update.message.reply_text(f"✅ OTP sent to `{phone}`\nSend the 6-digit OTP.", parse_mode="Markdown")
+        await safe_send(update, f"✅ OTP sent to <code>{phone}</code>\nSend the 6-digit OTP.", None, "HTML")
         return OTP
     else:
-        await update.message.reply_text(f"❌ Failed: {resp.get('message', 'Unknown error')}")
+        await safe_send(update, f"❌ Failed: {resp.get('message', 'Unknown error')}", None, "HTML")
         return ConversationHandler.END
 
 async def otp_input(update: Update, context):
     otp = update.message.text.strip()
     if len(otp) != 6 or not otp.isdigit():
-        await update.message.reply_text("❌ Invalid OTP. Enter 6 digits.")
+        await safe_send(update, "❌ Invalid OTP. Enter 6 digits.", None, "HTML")
         return OTP
     phone = None
     for p, (client, _) in pending_otp.items():
@@ -663,11 +696,11 @@ async def otp_input(update: Update, context):
             phone = p
             break
     if not phone:
-        await update.message.reply_text("❌ No pending OTP. Start with /start")
+        await safe_send(update, "❌ No pending OTP. Start with /start", None, "HTML")
         return ConversationHandler.END
     client, _ = pending_otp.pop(phone, (None, None))
     if not client:
-        await update.message.reply_text("❌ Session expired.")
+        await safe_send(update, "❌ Session expired.", None, "HTML")
         return ConversationHandler.END
     resp = client.verify_otp(otp)
     if resp.get("success"):
@@ -681,28 +714,25 @@ async def otp_input(update: Update, context):
         conn.commit()
         conn.close()
         log_action(acc_id, "ADD", "Account added")
-        await update.message.reply_text(
-            f"✅ **Account added!**\n📱 `{phone}`\n👤 {resp.get('name', 'User')}",
-            parse_mode="Markdown"
-        )
+        await safe_send(update, f"✅ <b>Account added!</b>\n📱 <code>{phone}</code>\n👤 {resp.get('name', 'User')}", None, "HTML")
     else:
-        await update.message.reply_text(f"❌ OTP failed: {resp.get('message', 'Unknown error')}")
+        await safe_send(update, f"❌ OTP failed: {resp.get('message', 'Unknown error')}", None, "HTML")
     return ConversationHandler.END
 
 async def file_input(update: Update, context):
     document = update.message.document
     if not document.file_name.endswith('.json'):
-        await update.message.reply_text("❌ Upload a .json file.")
+        await safe_send(update, "❌ Upload a .json file.", None, "HTML")
         return
     file = await context.bot.get_file(document.file_id)
     content = await file.download_as_bytearray()
     try:
         data = json.loads(content.decode('utf-8'))
     except:
-        await update.message.reply_text("❌ Invalid JSON.")
+        await safe_send(update, "❌ Invalid JSON.", None, "HTML")
         return
     if not isinstance(data, list):
-        await update.message.reply_text("❌ JSON must be a list.")
+        await safe_send(update, "❌ JSON must be a list.", None, "HTML")
         return
     added = 0
     for acc in data:
@@ -720,7 +750,7 @@ async def file_input(update: Update, context):
             log_action(c.lastrowid, "IMPORT", "Imported from file")
         conn.commit()
         conn.close()
-    await update.message.reply_text(f"✅ Imported {added} accounts.")
+    await safe_send(update, f"✅ Imported {added} accounts.", None, "HTML")
 
 async def interval_input(update: Update, context):
     try:
@@ -728,13 +758,13 @@ async def interval_input(update: Update, context):
         if hours < 1 or hours > 24:
             raise ValueError
         set_setting('auto_farm_interval', str(hours))
-        await update.message.reply_text(f"✅ Interval set to {hours} hours.")
+        await safe_send(update, f"✅ Interval set to {hours} hours.", None, "HTML")
     except:
-        await update.message.reply_text("❌ Send a number between 1 and 24.")
+        await safe_send(update, "❌ Send a number between 1 and 24.", None, "HTML")
     return ConversationHandler.END
 
 async def cancel(update: Update, context):
-    await update.message.reply_text("❌ Cancelled.")
+    await safe_send(update, "❌ Cancelled.", None, "HTML")
     return ConversationHandler.END
 
 # ==================== AUTO-FARM SCHEDULER ====================
@@ -758,3 +788,53 @@ async def auto_farm_job(context):
                 (result["coins"], result["coins"], result["coins"], datetime.now().isoformat(), acc[0])
             )
             conn.commit()
+            conn.close()
+            log_action(acc[0], "AUTO_FARM", f"Earned {result['coins']} coins")
+
+# ==================== MAIN ====================
+def main():
+    init_db()
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # Delete webhook to ensure polling works
+    try:
+        import requests
+        resp = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
+        if resp.status_code == 200:
+            logger.info("✅ Webhook deleted successfully")
+        else:
+            logger.warning(f"⚠️ Webhook deletion response: {resp.text}")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not delete webhook: {e}")
+
+    # Conversation handlers
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("start", start),
+            CallbackQueryHandler(button_handler, pattern="add_account"),
+        ],
+        states={
+            PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, phone_input)],
+            OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, otp_input)],
+            DELETE_CONFIRM: [CallbackQueryHandler(button_handler, pattern="confirm_delete")],
+        },
+        fallbacks=[CommandHandler("start", start), CallbackQueryHandler(button_handler, pattern="back")],
+    )
+    app.add_handler(conv_handler)
+    app.add_handler(MessageHandler(filters.Document.ALL, file_input))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", start))
+    app.add_handler(CommandHandler("credits", credits_command))
+
+    job_queue = app.job_queue
+    if job_queue:
+        job_queue.run_repeating(auto_farm_job, interval=3600, first=60)
+    else:
+        logger.warning("⚠️ JobQueue not available – auto-farm disabled.")
+
+    logger.info("Bot started polling...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
