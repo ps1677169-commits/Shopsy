@@ -44,7 +44,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ======================== PERMANENT PROXY POOL ========================
-# These proxies are ALWAYS used – no user controls.
 PROXY_POOL = [
     "http://GlwcQObskG0cCTOa:Dejrd8zYxOjjqcY9@geo.floppydata.com:10080",
     "http://DzBnvAfHHqPDqFll:wZV0cVNbFix79t4K@geo.floppydata.com:10080",
@@ -132,7 +131,6 @@ def log_action(account_id, action, message):
 
 # ======================== PROXY MANAGER ========================
 class ProxyManager:
-    """Manages permanent proxy pool with auto-rotation."""
     def __init__(self):
         self.pool = PROXY_POOL.copy()
         self.current_index = 0
@@ -140,10 +138,8 @@ class ProxyManager:
         self.lock = asyncio.Lock()
 
     def get_proxy(self) -> Optional[Dict]:
-        """Get the next working proxy (round-robin)."""
         if not self.pool:
             return None
-        # Find a proxy that hasn't failed recently
         attempts = 0
         while attempts < len(self.pool):
             proxy = self.pool[self.current_index]
@@ -151,25 +147,21 @@ class ProxyManager:
             if proxy not in self.failed_proxies:
                 return {'http': proxy, 'https': proxy}
             attempts += 1
-        # If all failed, reset and try again
         self.failed_proxies.clear()
         if self.pool:
             return {'http': self.pool[0], 'https': self.pool[0]}
         return None
 
     def mark_fail(self, proxy: str):
-        """Mark a proxy as failed."""
         self.failed_proxies.add(proxy)
 
     def mark_success(self, proxy: str):
-        """Mark a proxy as successful (remove from fail list)."""
         if proxy in self.failed_proxies:
             self.failed_proxies.remove(proxy)
 
-# Global proxy manager instance
 proxy_manager = ProxyManager()
 
-# ======================== SHOPSY CLIENT (with proxy) ========================
+# ======================== SHOPSY CLIENT ========================
 class ShopsyClient:
     def __init__(self, phone: str, cookie: str = None, vid: str = None, dc: int = 1):
         self.phone = phone
@@ -196,7 +188,6 @@ class ShopsyClient:
         return hosts.get(self.dc, hosts[1])
 
     def _request(self, method, url, **kwargs):
-        """Make a request with automatic proxy rotation."""
         proxy = proxy_manager.get_proxy()
         if proxy:
             kwargs['proxies'] = proxy
@@ -211,7 +202,6 @@ class ShopsyClient:
             if self.current_proxy:
                 proxy_manager.mark_fail(self.current_proxy)
                 logger.warning(f"Proxy {self.current_proxy} failed: {e}")
-            # Retry without proxy
             kwargs.pop('proxies', None)
             return self.session.request(method, url, timeout=15, **kwargs)
 
@@ -282,14 +272,12 @@ class FarmEngine:
     async def farm(self, callback=None) -> Dict:
         results = {"games": [], "coins": 0, "status": "success", "details": ""}
         try:
-            # Claim login bonus
             bonus = self.client.claim_login_bonus()
             if bonus.get("success"):
                 coins = bonus.get("coins", 0)
                 results["coins"] += coins
                 results["details"] += f"Login bonus: +{coins} "
 
-            # Get pending games
             status = self.client.get_games_status()
             pending = status.get("pending", 6)
 
@@ -327,8 +315,6 @@ class FarmEngine:
 # ======================== TELEGRAM BOT ========================
 pending_otp = {}
 pending_delete = {}
-
-# Conversation states
 PHONE, OTP, DELETE_CONFIRM = range(3)
 
 async def start(update: Update, context):
@@ -772,40 +758,3 @@ async def auto_farm_job(context):
                 (result["coins"], result["coins"], result["coins"], datetime.now().isoformat(), acc[0])
             )
             conn.commit()
-            conn.close()
-            log_action(acc[0], "AUTO_FARM", f"Earned {result['coins']} coins")
-
-# ==================== MAIN ====================
-def main():
-    init_db()
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    # Conversation handlers
-    conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler("start", start),
-            CallbackQueryHandler(button_handler, pattern="add_account"),
-        ],
-        states={
-            PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, phone_input)],
-            OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, otp_input)],
-            DELETE_CONFIRM: [CallbackQueryHandler(button_handler, pattern="confirm_delete")],
-        },
-        fallbacks=[CommandHandler("start", start), CallbackQueryHandler(button_handler, pattern="back")],
-    )
-    app.add_handler(conv_handler)
-    app.add_handler(MessageHandler(filters.Document.ALL, file_input))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", start))
-    app.add_handler(CommandHandler("credits", credits_command))
-
-    job_queue = app.job_queue
-    if job_queue:
-        job_queue.run_repeating(auto_farm_job, interval=3600, first=60)
-
-    logger.info("Bot started polling...")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
