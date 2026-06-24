@@ -160,7 +160,7 @@ class ProxyManager:
 
 proxy_manager = ProxyManager()
 
-# ======================== SHOPSY CLIENT ========================
+# ======================== SHOPSY CLIENT (FIXED DOMAIN) ========================
 class ShopsyClient:
     def __init__(self, phone: str, cookie: str = None, vid: str = None, dc: int = 1):
         self.phone = phone
@@ -178,19 +178,34 @@ class ShopsyClient:
         self.current_proxy = None
 
     def _get_host(self) -> str:
-        hosts = {
-            1: "https://1.rose.ap1.fikpart.net",
-            2: "https://2.rose.ap1.fikpart.net",
-            3: "https://3.rose.ap1.fikpart.net",
-            4: "https://4.rose.ap1.fikpart.net"
-        }
-        return hosts.get(self.dc, hosts[1])
+        # Use main API domain directly – avoids DNS issues with fikpart.net
+        return self.base_url
 
     def _request(self, method, url, **kwargs):
+        # Rewrite any fikpart.net URLs to api.shopsy.in
+        if "fikpart.net" in url:
+            url = url.replace("1.rose.ap1.fikpart.net", "api.shopsy.in")
+            url = url.replace("2.rose.ap1.fikpart.net", "api.shopsy.in")
+            url = url.replace("3.rose.ap1.fikpart.net", "api.shopsy.in")
+            url = url.replace("4.rose.ap1.fikpart.net", "api.shopsy.in")
+        
+        # Bypass proxy for Shopsy API – use direct connection
+        if "shopsy" in url or "fikpart" in url:
+            kwargs.pop('proxies', None)
+            try:
+                resp = self.session.request(method, url, timeout=15, **kwargs)
+                logger.info(f"📡 API request: {url[:50]}... -> {resp.status_code}")
+                return resp
+            except Exception as e:
+                logger.error(f"❌ API request failed: {e}")
+                raise
+        
+        # For other requests, use proxy normally
         proxy = proxy_manager.get_proxy()
         if proxy:
             kwargs['proxies'] = proxy
             self.current_proxy = proxy.get('http')
+        
         try:
             resp = self.session.request(method, url, timeout=15, **kwargs)
             if resp.status_code < 400:
