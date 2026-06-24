@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
 Shopsy SuperCoin Farm Bot – Ultimate Edition
-Telegram bot with mass account management, auto-farm, clickable buttons.
+Telegram bot with mass account management, auto-farm, clickable buttons, and permanent rotating proxies.
 
 ================================================================
 CREDITS
 ================================================================
 Developed by: @hey_berlin
 Special thanks to: The Shopsy community & early testers.
-Version: 1.0.0
-Repository: https://github.com/YOUR_USERNAME/shopsy-farm-bot
+Version: 1.1.0
 ================================================================
 """
 import os
@@ -21,7 +20,6 @@ import asyncio
 import sqlite3
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
-from threading import Thread
 
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -36,8 +34,7 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable not set!")
 
 DB_FILE = "shopsy.db"
-AUTO_FARM_INTERVAL = 2  # hours
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 AUTHOR = "@hey_berlin"
 
 logging.basicConfig(
@@ -46,8 +43,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Conversation states
-PHONE, OTP, RENAME, DELETE_CONFIRM = range(4)
+# ======================== PERMANENT PROXY POOL ========================
+# These proxies are ALWAYS used – no user controls.
+PROXY_POOL = [
+    "http://GlwcQObskG0cCTOa:Dejrd8zYxOjjqcY9@geo.floppydata.com:10080",
+    "http://DzBnvAfHHqPDqFll:wZV0cVNbFix79t4K@geo.floppydata.com:10080",
+    "http://ykmPCzNWrQdPQ5Ul:zmLyZetwxrpjhqSd@geo-dc.floppydata.com:10080",
+    "http://8LH6ieLzPxNZajZU:Jg5OLu0HmU9CoKzB@geo.floppydata.com:10080",
+    "http://1yec3wWxjvCXPc5V:qpcpD67Y7Tg0XHIm@geo.floppydata.com:10080",
+    "http://lqSo9YnxZ5E309Ii:zTAmx7ZKcThqFsDi@geo-dc.floppydata.com:10080",
+    "http://0Bgry9z3xKvu6xnL:Z4v24Ab1kp9lkvHD@geo-dc.floppydata.com:10080",
+    "http://zidoqPECIrGNoa0D:vwYU094925uFjEP5@geo.floppydata.com:10080",
+    "http://hB0Gt9IQUtvEcyVi:Q2LEkIFYvcu9x0SG@geo.floppydata.com:10080",
+    "http://ZKBo0bpg4dxC5fAI:WQcfXONgARKS9XSi@geo.floppydata.com:10080",
+    "http://lq3PPnLp6GDa60Py:xrcPiH7zyHjCtTTG@geo.floppydata.com:10080",
+    "http://D7LPlz8eDBINP8Xh:OdEEumBcXxCSYIOS@geo.floppydata.com:10080",
+    "http://HnIRwhAH2LOSsKmb:ZA2mzTEJCrTJ3ze4@geo-dc.floppydata.com:10080",
+    "http://hdty6YibAlNwm9To:OT5yYUH4nMZZdWXb@geo-dc.floppydata.com:10080",
+    "http://K9k2rVZWvLQZL8Ni:1N8Z7l4lApE2K2dr@geo-dc.floppydata.com:10080",
+    "http://KYT9fdyDu0e8cyVk:EgFG7FDAkl36ILu2@geo-dc.floppydata.com:10080",
+]
 
 # ======================== DATABASE ========================
 def init_db():
@@ -115,7 +130,46 @@ def log_action(account_id, action, message):
     conn.commit()
     conn.close()
 
-# ======================== SHOPSY CLIENT ========================
+# ======================== PROXY MANAGER ========================
+class ProxyManager:
+    """Manages permanent proxy pool with auto-rotation."""
+    def __init__(self):
+        self.pool = PROXY_POOL.copy()
+        self.current_index = 0
+        self.failed_proxies = set()
+        self.lock = asyncio.Lock()
+
+    def get_proxy(self) -> Optional[Dict]:
+        """Get the next working proxy (round-robin)."""
+        if not self.pool:
+            return None
+        # Find a proxy that hasn't failed recently
+        attempts = 0
+        while attempts < len(self.pool):
+            proxy = self.pool[self.current_index]
+            self.current_index = (self.current_index + 1) % len(self.pool)
+            if proxy not in self.failed_proxies:
+                return {'http': proxy, 'https': proxy}
+            attempts += 1
+        # If all failed, reset and try again
+        self.failed_proxies.clear()
+        if self.pool:
+            return {'http': self.pool[0], 'https': self.pool[0]}
+        return None
+
+    def mark_fail(self, proxy: str):
+        """Mark a proxy as failed."""
+        self.failed_proxies.add(proxy)
+
+    def mark_success(self, proxy: str):
+        """Mark a proxy as successful (remove from fail list)."""
+        if proxy in self.failed_proxies:
+            self.failed_proxies.remove(proxy)
+
+# Global proxy manager instance
+proxy_manager = ProxyManager()
+
+# ======================== SHOPSY CLIENT (with proxy) ========================
 class ShopsyClient:
     def __init__(self, phone: str, cookie: str = None, vid: str = None, dc: int = 1):
         self.phone = phone
@@ -130,6 +184,7 @@ class ShopsyClient:
         })
         self.base_url = "https://api.shopsy.in"
         self.logged_in = bool(cookie)
+        self.current_proxy = None
 
     def _get_host(self) -> str:
         hosts = {
@@ -140,16 +195,36 @@ class ShopsyClient:
         }
         return hosts.get(self.dc, hosts[1])
 
+    def _request(self, method, url, **kwargs):
+        """Make a request with automatic proxy rotation."""
+        proxy = proxy_manager.get_proxy()
+        if proxy:
+            kwargs['proxies'] = proxy
+            self.current_proxy = proxy.get('http')
+        try:
+            resp = self.session.request(method, url, timeout=15, **kwargs)
+            if resp.status_code < 400:
+                if self.current_proxy:
+                    proxy_manager.mark_success(self.current_proxy)
+            return resp
+        except Exception as e:
+            if self.current_proxy:
+                proxy_manager.mark_fail(self.current_proxy)
+                logger.warning(f"Proxy {self.current_proxy} failed: {e}")
+            # Retry without proxy
+            kwargs.pop('proxies', None)
+            return self.session.request(method, url, timeout=15, **kwargs)
+
     def request_otp(self) -> Dict:
         url = f"{self._get_host()}/api/v1/auth/otp"
         payload = {"phone": self.phone}
-        resp = self.session.post(url, json=payload)
+        resp = self._request("POST", url, json=payload)
         return resp.json()
 
     def verify_otp(self, otp: str) -> Dict:
         url = f"{self._get_host()}/api/v1/auth/login"
         payload = {"phone": self.phone, "otp": otp}
-        resp = self.session.post(url, json=payload)
+        resp = self._request("POST", url, json=payload)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("success"):
@@ -161,33 +236,33 @@ class ShopsyClient:
 
     def get_profile(self) -> Dict:
         url = f"{self._get_host()}/api/v1/user/profile"
-        resp = self.session.get(url, cookies={"cookie": self.cookie})
+        resp = self._request("GET", url, cookies={"cookie": self.cookie})
         return resp.json()
 
     def claim_login_bonus(self) -> Dict:
         url = f"{self._get_host()}/api/v1/rewards/login"
-        resp = self.session.post(url, cookies={"cookie": self.cookie})
+        resp = self._request("POST", url, cookies={"cookie": self.cookie})
         return resp.json()
 
     def start_game(self, game: str) -> Dict:
         url = f"{self._get_host()}/api/v1/games/{game}/start"
-        resp = self.session.post(url, cookies={"cookie": self.cookie})
+        resp = self._request("POST", url, cookies={"cookie": self.cookie})
         return resp.json()
 
     def finish_game(self, game: str, session_id: str, score: int = 0) -> Dict:
         url = f"{self._get_host()}/api/v1/games/{game}/finish"
         payload = {"sessionId": session_id, "score": score}
-        resp = self.session.post(url, json=payload, cookies={"cookie": self.cookie})
+        resp = self._request("POST", url, json=payload, cookies={"cookie": self.cookie})
         return resp.json()
 
     def get_coins(self) -> Dict:
         url = f"{self._get_host()}/api/v1/coins"
-        resp = self.session.get(url, cookies={"cookie": self.cookie})
+        resp = self._request("GET", url, cookies={"cookie": self.cookie})
         return resp.json()
 
     def get_games_status(self) -> Dict:
         url = f"{self._get_host()}/api/v1/games/status"
-        resp = self.session.get(url, cookies={"cookie": self.cookie})
+        resp = self._request("GET", url, cookies={"cookie": self.cookie})
         return resp.json()
 
 # ======================== FARM ENGINE ========================
@@ -221,7 +296,6 @@ class FarmEngine:
             for game in self.GAMES:
                 if pending <= 0:
                     break
-                # Start game
                 start_resp = self.client.start_game(game["name"])
                 if not start_resp.get("success"):
                     continue
@@ -229,11 +303,9 @@ class FarmEngine:
                 wait_time = game["wait"] if self.mode == "FAST" else game["wait"] + 30
                 if self.mode == "SLOW":
                     wait_time = game["wait"] + 60
-                # Simulate playing (wait)
                 if callback:
                     await callback(f"🎮 {game['name']} ... {wait_time}s")
                 await asyncio.sleep(wait_time)
-                # Finish game
                 finish_resp = self.client.finish_game(game["name"], session_id)
                 if finish_resp.get("success"):
                     coins = finish_resp.get("coins", game["coins"])
@@ -253,8 +325,11 @@ class FarmEngine:
         return results
 
 # ======================== TELEGRAM BOT ========================
-pending_otp = {}  # phone -> (client, request_id)
-pending_delete = {}  # user_id -> account_id
+pending_otp = {}
+pending_delete = {}
+
+# Conversation states
+PHONE, OTP, DELETE_CONFIRM = range(3)
 
 async def start(update: Update, context):
     keyboard = [
@@ -272,7 +347,7 @@ async def start(update: Update, context):
         "🛒 **Shopsy SuperCoin Farm Bot**\n\n"
         "Earn coins automatically by playing mini-games.\n"
         "Add your Shopsy account and start farming!\n\n"
-        "⚠️ Use at your own risk – Shopsy may ban.\n\n"
+        f"🌐 Proxy: **✅ Auto-Rotating ({len(PROXY_POOL)} proxies)**\n"
         f"📈 **Developed by: {AUTHOR}**",
         reply_markup=reply_markup,
         parse_mode="Markdown"
@@ -296,7 +371,6 @@ async def button_handler(update: Update, context):
     data = query.data
     user_id = update.effective_user.id
 
-    # ==================== CREDITS ====================
     if data == "credits":
         await query.message.reply_text(
             f"📈 **Credits**\n\n"
@@ -310,7 +384,6 @@ async def button_handler(update: Update, context):
         )
         return
 
-    # ==================== ADD ACCOUNT ====================
     if data == "add_account":
         await query.message.reply_text(
             "📱 **Add Account**\n\n"
@@ -319,9 +392,8 @@ async def button_handler(update: Update, context):
             "Or upload a JSON file with multiple accounts.",
             parse_mode="Markdown"
         )
-        return ConversationHandler.ENTER_PHONE
+        return PHONE
 
-    # ==================== LIST ACCOUNTS ====================
     elif data == "list_accounts":
         conn = get_conn()
         c = conn.cursor()
@@ -341,7 +413,7 @@ async def button_handler(update: Update, context):
                 f"  {status}\n\n"
             )
         keyboard = []
-        for row in rows[:5]:  # Show first 5 for quick actions
+        for row in rows[:5]:
             keyboard.append([
                 InlineKeyboardButton(f"🎮 Farm {row[2]}", callback_data=f"farm_{row[0]}"),
                 InlineKeyboardButton(f"⏸️ {'Pause' if row[5] else 'Resume'}", callback_data=f"toggle_{row[0]}"),
@@ -351,7 +423,6 @@ async def button_handler(update: Update, context):
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.reply_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
 
-    # ==================== FARM SINGLE ====================
     elif data.startswith("farm_"):
         acc_id = int(data.split("_")[1])
         conn = get_conn()
@@ -382,7 +453,6 @@ async def button_handler(update: Update, context):
         else:
             await query.message.reply_text(f"❌ Failed: {result['status']}")
 
-    # ==================== TOGGLE ACCOUNT ====================
     elif data.startswith("toggle_"):
         acc_id = int(data.split("_")[1])
         conn = get_conn()
@@ -395,9 +465,8 @@ async def button_handler(update: Update, context):
             conn.commit()
         conn.close()
         await query.message.reply_text(f"✅ Account {'activated' if new_status else 'paused'}.")
-        await button_handler(update, context)  # Refresh list
+        await button_handler(update, context)
 
-    # ==================== DELETE ACCOUNT ====================
     elif data.startswith("delete_"):
         acc_id = int(data.split("_")[1])
         pending_delete[user_id] = acc_id
@@ -422,7 +491,6 @@ async def button_handler(update: Update, context):
             await query.message.reply_text("No account to delete.")
         await button_handler(update, context)
 
-    # ==================== FARM ALL ====================
     elif data == "farm_all":
         conn = get_conn()
         c = conn.cursor()
@@ -458,7 +526,6 @@ async def button_handler(update: Update, context):
             + "\n".join(results)
         )
 
-    # ==================== STATS ====================
     elif data == "stats":
         conn = get_conn()
         c = conn.cursor()
@@ -481,7 +548,6 @@ async def button_handler(update: Update, context):
             f"🏆 Lifetime earnings: {lifetime}"
         )
 
-    # ==================== SETTINGS ====================
     elif data == "settings":
         current_mode = get_setting('mode', 'FAST')
         auto_farm = get_setting('auto_farm', '0')
@@ -518,7 +584,6 @@ async def button_handler(update: Update, context):
         )
         return ConversationHandler.ENTER_INTERVAL
 
-    # ==================== EXPORT / IMPORT ====================
     elif data == "export_import":
         keyboard = [
             [InlineKeyboardButton("📤 Export Accounts", callback_data="export")],
@@ -554,7 +619,6 @@ async def button_handler(update: Update, context):
         )
         return ConversationHandler.ENTER_IMPORT
 
-    # ==================== LOGS ====================
     elif data == "logs":
         conn = get_conn()
         c = conn.cursor()
@@ -573,43 +637,33 @@ async def button_handler(update: Update, context):
             msg += f"`{row[0]}` – {row[1]}: {row[2][:30]}\n  {row[3][:16]}\n\n"
         await query.message.reply_text(msg, parse_mode="Markdown")
 
-    # ==================== BACK ====================
     elif data == "back":
         await start(update, context)
 
-    # ==================== BULK IMPORT HANDLING ====================
-    elif data == "import_confirm":
-        # Handled via file upload
-        pass
+    return ConversationHandler.END
 
-# ==================== CONVERSATION HANDLERS ====================
+# ==================== MESSAGE HANDLERS ====================
 async def phone_input(update: Update, context):
     phone = update.message.text.strip()
     if not phone.startswith("+") or len(phone) < 10:
         await update.message.reply_text("❌ Invalid phone. Use format: `+919890902059`", parse_mode="Markdown")
         return ConversationHandler.END
-    # Check if account exists
     conn = get_conn()
     c = conn.cursor()
     c.execute("SELECT id FROM accounts WHERE phone = ?", (phone,))
     exists = c.fetchone()
     conn.close()
     if exists:
-        await update.message.reply_text("❌ This phone is already added. Use /start to manage.")
+        await update.message.reply_text("❌ This phone is already added.")
         return ConversationHandler.END
-    # Request OTP
     client = ShopsyClient(phone)
     resp = client.request_otp()
     if resp.get("success"):
         pending_otp[phone] = (client, resp.get("requestId"))
-        await update.message.reply_text(
-            f"✅ OTP sent to `{phone}`\n\n"
-            "Send the OTP (6 digits) to verify.",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text(f"✅ OTP sent to `{phone}`\nSend the 6-digit OTP.", parse_mode="Markdown")
         return OTP
     else:
-        await update.message.reply_text(f"❌ Failed to send OTP: {resp.get('message', 'Unknown error')}")
+        await update.message.reply_text(f"❌ Failed: {resp.get('message', 'Unknown error')}")
         return ConversationHandler.END
 
 async def otp_input(update: Update, context):
@@ -617,22 +671,20 @@ async def otp_input(update: Update, context):
     if len(otp) != 6 or not otp.isdigit():
         await update.message.reply_text("❌ Invalid OTP. Enter 6 digits.")
         return OTP
-    # Find pending phone
     phone = None
     for p, (client, _) in pending_otp.items():
         if client.phone:
             phone = p
             break
     if not phone:
-        await update.message.reply_text("❌ No pending OTP request. Start with /start")
+        await update.message.reply_text("❌ No pending OTP. Start with /start")
         return ConversationHandler.END
-    client, request_id = pending_otp.pop(phone, (None, None))
+    client, _ = pending_otp.pop(phone, (None, None))
     if not client:
-        await update.message.reply_text("❌ Session expired. Try again.")
+        await update.message.reply_text("❌ Session expired.")
         return ConversationHandler.END
     resp = client.verify_otp(otp)
     if resp.get("success"):
-        # Save account
         conn = get_conn()
         c = conn.cursor()
         c.execute(
@@ -642,33 +694,29 @@ async def otp_input(update: Update, context):
         acc_id = c.lastrowid
         conn.commit()
         conn.close()
-        log_action(acc_id, "ADD", "Account added successfully")
+        log_action(acc_id, "ADD", "Account added")
         await update.message.reply_text(
-            f"✅ **Account added successfully!**\n\n"
-            f"📱 `{phone}`\n"
-            f"👤 Name: {resp.get('name', 'User')}\n\n"
-            "Use /start to manage your accounts.",
+            f"✅ **Account added!**\n📱 `{phone}`\n👤 {resp.get('name', 'User')}",
             parse_mode="Markdown"
         )
     else:
-        await update.message.reply_text(f"❌ OTP verification failed: {resp.get('message', 'Unknown error')}")
+        await update.message.reply_text(f"❌ OTP failed: {resp.get('message', 'Unknown error')}")
     return ConversationHandler.END
 
 async def file_input(update: Update, context):
-    """Handle JSON file upload for import."""
     document = update.message.document
     if not document.file_name.endswith('.json'):
-        await update.message.reply_text("❌ Please upload a `.json` file.")
+        await update.message.reply_text("❌ Upload a .json file.")
         return
     file = await context.bot.get_file(document.file_id)
     content = await file.download_as_bytearray()
     try:
         data = json.loads(content.decode('utf-8'))
     except:
-        await update.message.reply_text("❌ Invalid JSON format.")
+        await update.message.reply_text("❌ Invalid JSON.")
         return
     if not isinstance(data, list):
-        await update.message.reply_text("❌ JSON must be a list of accounts.")
+        await update.message.reply_text("❌ JSON must be a list.")
         return
     added = 0
     for acc in data:
@@ -683,14 +731,10 @@ async def file_input(update: Update, context):
         )
         if c.rowcount:
             added += 1
-            log_action(c.lastrowid, "IMPORT", "Account imported from file")
+            log_action(c.lastrowid, "IMPORT", "Imported from file")
         conn.commit()
         conn.close()
-    await update.message.reply_text(f"✅ Imported {added} new accounts.")
-
-async def cancel(update: Update, context):
-    await update.message.reply_text("❌ Operation cancelled.")
-    return ConversationHandler.END
+    await update.message.reply_text(f"✅ Imported {added} accounts.")
 
 async def interval_input(update: Update, context):
     try:
@@ -698,9 +742,13 @@ async def interval_input(update: Update, context):
         if hours < 1 or hours > 24:
             raise ValueError
         set_setting('auto_farm_interval', str(hours))
-        await update.message.reply_text(f"✅ Auto-farm interval set to {hours} hours.")
+        await update.message.reply_text(f"✅ Interval set to {hours} hours.")
     except:
-        await update.message.reply_text("❌ Invalid. Send a number between 1 and 24.")
+        await update.message.reply_text("❌ Send a number between 1 and 24.")
+    return ConversationHandler.END
+
+async def cancel(update: Update, context):
+    await update.message.reply_text("❌ Cancelled.")
     return ConversationHandler.END
 
 # ==================== AUTO-FARM SCHEDULER ====================
@@ -737,7 +785,6 @@ def main():
         entry_points=[
             CommandHandler("start", start),
             CallbackQueryHandler(button_handler, pattern="add_account"),
-            CallbackQueryHandler(button_handler, pattern="import"),
         ],
         states={
             PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, phone_input)],
@@ -753,7 +800,6 @@ def main():
     app.add_handler(CommandHandler("help", start))
     app.add_handler(CommandHandler("credits", credits_command))
 
-    # Auto-farm scheduler (runs every hour)
     job_queue = app.job_queue
     if job_queue:
         job_queue.run_repeating(auto_farm_job, interval=3600, first=60)
