@@ -401,6 +401,7 @@ async def button_handler(update: Update, context):
         return
 
     if data == "add_account":
+        logger.info("📱 Add Account button clicked – entering PHONE state")
         text = (
             "📱 <b>Add Account</b>\n\n"
             "Send your phone number with country code:\n"
@@ -658,6 +659,7 @@ async def button_handler(update: Update, context):
 
 # ==================== MESSAGE HANDLERS ====================
 async def phone_input(update: Update, context):
+    logger.info(f"📱 Phone input received: {update.message.text}")
     phone = update.message.text.strip()
     if not phone.startswith("+") or len(phone) < 10:
         await safe_send(update, "❌ Invalid phone. Use format: <code>+919890902059</code>", parse_mode="HTML")
@@ -671,7 +673,9 @@ async def phone_input(update: Update, context):
         await safe_send(update, "❌ This phone is already added.", parse_mode="HTML")
         return ConversationHandler.END
     client = ShopsyClient(phone)
+    logger.info(f"📤 Requesting OTP for {phone}")
     resp = client.request_otp()
+    logger.info(f"📥 OTP response: {resp}")
     if resp.get("success"):
         pending_otp[phone] = (client, resp.get("requestId"))
         await safe_send(update, f"✅ OTP sent to <code>{phone}</code>\nSend the 6-digit OTP.", parse_mode="HTML")
@@ -681,6 +685,7 @@ async def phone_input(update: Update, context):
         return ConversationHandler.END
 
 async def otp_input(update: Update, context):
+    logger.info(f"🔑 OTP received: {update.message.text}")
     otp = update.message.text.strip()
     if len(otp) != 6 or not otp.isdigit():
         await safe_send(update, "❌ Invalid OTP. Enter 6 digits.", parse_mode="HTML")
@@ -697,7 +702,9 @@ async def otp_input(update: Update, context):
     if not client:
         await safe_send(update, "❌ Session expired.", parse_mode="HTML")
         return ConversationHandler.END
+    logger.info(f"🔐 Verifying OTP for {phone}")
     resp = client.verify_otp(otp)
+    logger.info(f"✅ Verification response: {resp}")
     if resp.get("success"):
         conn = get_conn()
         c = conn.cursor()
