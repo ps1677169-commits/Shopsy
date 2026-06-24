@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Shopsy SuperCoin Farm Bot – Ultimate Edition
-Telegram bot with mass account management, auto-farm, clickable buttons, and permanent rotating proxies.
+Telegram bot with mass account management, auto-farm, clickable buttons.
+NO PROXY – direct connection with hardcoded IP fallback.
 
 ================================================================
 CREDITS
@@ -43,25 +44,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ======================== PERMANENT PROXY POOL ========================
-PROXY_POOL = [
-    "http://GlwcQObskG0cCTOa:Dejrd8zYxOjjqcY9@geo.floppydata.com:10080",
-    "http://DzBnvAfHHqPDqFll:wZV0cVNbFix79t4K@geo.floppydata.com:10080",
-    "http://ykmPCzNWrQdPQ5Ul:zmLyZetwxrpjhqSd@geo-dc.floppydata.com:10080",
-    "http://8LH6ieLzPxNZajZU:Jg5OLu0HmU9CoKzB@geo.floppydata.com:10080",
-    "http://1yec3wWxjvCXPc5V:qpcpD67Y7Tg0XHIm@geo.floppydata.com:10080",
-    "http://lqSo9YnxZ5E309Ii:zTAmx7ZKcThqFsDi@geo-dc.floppydata.com:10080",
-    "http://0Bgry9z3xKvu6xnL:Z4v24Ab1kp9lkvHD@geo-dc.floppydata.com:10080",
-    "http://zidoqPECIrGNoa0D:vwYU094925uFjEP5@geo.floppydata.com:10080",
-    "http://hB0Gt9IQUtvEcyVi:Q2LEkIFYvcu9x0SG@geo.floppydata.com:10080",
-    "http://ZKBo0bpg4dxC5fAI:WQcfXONgARKS9XSi@geo.floppydata.com:10080",
-    "http://lq3PPnLp6GDa60Py:xrcPiH7zyHjCtTTG@geo.floppydata.com:10080",
-    "http://D7LPlz8eDBINP8Xh:OdEEumBcXxCSYIOS@geo.floppydata.com:10080",
-    "http://HnIRwhAH2LOSsKmb:ZA2mzTEJCrTJ3ze4@geo-dc.floppydata.com:10080",
-    "http://hdty6YibAlNwm9To:OT5yYUH4nMZZdWXb@geo-dc.floppydata.com:10080",
-    "http://K9k2rVZWvLQZL8Ni:1N8Z7l4lApE2K2dr@geo-dc.floppydata.com:10080",
-    "http://KYT9fdyDu0e8cyVk:EgFG7FDAkl36ILu2@geo-dc.floppydata.com:10080",
-]
+# ======================== PROXY POOL (DISABLED) ========================
+PROXY_POOL = []
 
 # ======================== DATABASE ========================
 def init_db():
@@ -129,38 +113,7 @@ def log_action(account_id, action, message):
     conn.commit()
     conn.close()
 
-# ======================== PROXY MANAGER ========================
-class ProxyManager:
-    def __init__(self):
-        self.pool = PROXY_POOL.copy()
-        self.current_index = 0
-        self.failed_proxies = set()
-
-    def get_proxy(self) -> Optional[Dict]:
-        if not self.pool:
-            return None
-        attempts = 0
-        while attempts < len(self.pool):
-            proxy = self.pool[self.current_index]
-            self.current_index = (self.current_index + 1) % len(self.pool)
-            if proxy not in self.failed_proxies:
-                return {'http': proxy, 'https': proxy}
-            attempts += 1
-        self.failed_proxies.clear()
-        if self.pool:
-            return {'http': self.pool[0], 'https': self.pool[0]}
-        return None
-
-    def mark_fail(self, proxy: str):
-        self.failed_proxies.add(proxy)
-
-    def mark_success(self, proxy: str):
-        if proxy in self.failed_proxies:
-            self.failed_proxies.remove(proxy)
-
-proxy_manager = ProxyManager()
-
-# ======================== SHOPSY CLIENT (FIXED DOMAIN) ========================
+# ======================== SHOPSY CLIENT (NO PROXY + IP FALLBACK) ========================
 class ShopsyClient:
     def __init__(self, phone: str, cookie: str = None, vid: str = None, dc: int = 1):
         self.phone = phone
@@ -171,53 +124,36 @@ class ShopsyClient:
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Host": "api.shopsy.in"
         })
         self.base_url = "https://api.shopsy.in"
         self.logged_in = bool(cookie)
-        self.current_proxy = None
 
     def _get_host(self) -> str:
-        # Use main API domain directly – avoids DNS issues with fikpart.net
         return self.base_url
 
     def _request(self, method, url, **kwargs):
-        # Rewrite any fikpart.net URLs to api.shopsy.in
-        if "fikpart.net" in url:
-            url = url.replace("1.rose.ap1.fikpart.net", "api.shopsy.in")
-            url = url.replace("2.rose.ap1.fikpart.net", "api.shopsy.in")
-            url = url.replace("3.rose.ap1.fikpart.net", "api.shopsy.in")
-            url = url.replace("4.rose.ap1.fikpart.net", "api.shopsy.in")
+        # NO PROXY – remove any proxy
+        kwargs.pop('proxies', None)
         
-        # Bypass proxy for Shopsy API – use direct connection
-        if "shopsy" in url or "fikpart" in url:
-            kwargs.pop('proxies', None)
-            try:
-                resp = self.session.request(method, url, timeout=15, **kwargs)
-                logger.info(f"📡 API request: {url[:50]}... -> {resp.status_code}")
-                return resp
-            except Exception as e:
-                logger.error(f"❌ API request failed: {e}")
-                raise
-        
-        # For other requests, use proxy normally
-        proxy = proxy_manager.get_proxy()
-        if proxy:
-            kwargs['proxies'] = proxy
-            self.current_proxy = proxy.get('http')
-        
+        # Try with domain first
         try:
-            resp = self.session.request(method, url, timeout=15, **kwargs)
-            if resp.status_code < 400:
-                if self.current_proxy:
-                    proxy_manager.mark_success(self.current_proxy)
+            resp = self.session.request(method, url, timeout=20, **kwargs)
+            logger.info(f"📡 API: {url[:50]}... -> {resp.status_code}")
             return resp
         except Exception as e:
-            if self.current_proxy:
-                proxy_manager.mark_fail(self.current_proxy)
-                logger.warning(f"Proxy {self.current_proxy} failed: {e}")
-            kwargs.pop('proxies', None)
-            return self.session.request(method, url, timeout=15, **kwargs)
+            logger.error(f"❌ Domain failed: {e}")
+            # Fallback: hardcoded IP
+            try:
+                ip_url = url.replace("api.shopsy.in", "13.235.98.200")
+                self.session.headers["Host"] = "api.shopsy.in"
+                resp = self.session.request(method, ip_url, timeout=20, **kwargs)
+                logger.info(f"📡 API via IP: {ip_url[:50]}... -> {resp.status_code}")
+                return resp
+            except Exception as e2:
+                logger.error(f"❌ IP also failed: {e2}")
+                raise
 
     def request_otp(self) -> Dict:
         url = f"{self._get_host()}/api/v1/auth/otp"
@@ -226,7 +162,7 @@ class ShopsyClient:
             resp = self._request("POST", url, json=payload)
             return resp.json()
         except Exception as e:
-            logger.error(f"OTP request error: {e}")
+            logger.error(f"OTP error: {e}")
             return {"success": False, "message": str(e)}
 
     def verify_otp(self, otp: str) -> Dict:
@@ -244,7 +180,7 @@ class ShopsyClient:
                 return data
             return {"success": False, "message": f"HTTP {resp.status_code}"}
         except Exception as e:
-            logger.error(f"OTP verification error: {e}")
+            logger.error(f"Verify error: {e}")
             return {"success": False, "message": str(e)}
 
     def get_profile(self) -> Dict:
@@ -347,14 +283,14 @@ async def safe_send(update: Update, text: str, reply_markup=None, parse_mode="HT
         else:
             await update.message.reply_text(text, parse_mode=parse_mode)
     except Exception as e:
-        logger.error(f"Failed to send with {parse_mode}: {e}")
+        logger.error(f"Send error: {e}")
         try:
             if reply_markup:
                 await update.message.reply_text(text, reply_markup=reply_markup)
             else:
                 await update.message.reply_text(text)
         except Exception as e2:
-            logger.error(f"Failed to send plain text: {e2}")
+            logger.error(f"Plain fallback error: {e2}")
 
 async def start(update: Update, context):
     keyboard = [
@@ -372,7 +308,7 @@ async def start(update: Update, context):
         "🛒 <b>Shopsy SuperCoin Farm Bot</b>\n\n"
         "Earn coins automatically by playing mini-games.\n"
         "Add your Shopsy account and start farming!\n\n"
-        f"🌐 Proxy: <b>✅ Auto-Rotating ({len(PROXY_POOL)} proxies)</b>\n\n"
+        "🌐 Proxy: <b>❌ DISABLED (Direct connection)</b>\n\n"
         "────────────────────\n"
         "👨‍💻 <b>Made with ❤️ by @hey_berlin</b>"
     )
@@ -426,7 +362,7 @@ async def button_handler(update: Update, context):
         return
 
     if data == "add_account":
-        logger.info("📱 Add Account button clicked – entering PHONE state")
+        logger.info("📱 Add Account button clicked")
         text = (
             "📱 <b>Add Account</b>\n\n"
             "Send your phone number with country code:\n"
@@ -684,7 +620,7 @@ async def button_handler(update: Update, context):
 
 # ==================== MESSAGE HANDLERS ====================
 async def phone_input(update: Update, context):
-    logger.info(f"📱 Phone input received: {update.message.text}")
+    logger.info(f"📱 Phone input: {update.message.text}")
     phone = update.message.text.strip()
     
     # Clean phone number
@@ -696,10 +632,10 @@ async def phone_input(update: Update, context):
     elif not phone.startswith("+"):
         phone = "+" + phone
     
-    logger.info(f"📱 Cleaned phone: {phone}")
+    logger.info(f"📱 Cleaned: {phone}")
     
     if len(phone) < 10:
-        await safe_send(update, "❌ Invalid phone. Use format: <code>+919890902059</code>", parse_mode="HTML")
+        await safe_send(update, "❌ Invalid phone. Use: <code>+919890902059</code>", parse_mode="HTML")
         return ConversationHandler.END
     
     conn = get_conn()
@@ -718,8 +654,8 @@ async def phone_input(update: Update, context):
         resp = client.request_otp()
         logger.info(f"📥 OTP response: {json.dumps(resp, indent=2)}")
     except Exception as e:
-        logger.error(f"❌ OTP request error: {e}")
-        await safe_send(update, f"❌ OTP request failed: {str(e)}\n\nPlease try again later.", parse_mode="HTML")
+        logger.error(f"❌ OTP error: {e}")
+        await safe_send(update, f"❌ OTP request failed: {str(e)}", parse_mode="HTML")
         return ConversationHandler.END
     
     if resp.get("success"):
@@ -728,8 +664,8 @@ async def phone_input(update: Update, context):
         return OTP
     else:
         error_msg = resp.get('message', 'Unknown error')
-        logger.error(f"❌ OTP request failed: {error_msg}")
-        await safe_send(update, f"❌ Failed to send OTP: {error_msg}\n\nMake sure the phone number is correct.", parse_mode="HTML")
+        logger.error(f"❌ OTP failed: {error_msg}")
+        await safe_send(update, f"❌ Failed: {error_msg}", parse_mode="HTML")
         return ConversationHandler.END
 
 async def otp_input(update: Update, context):
@@ -739,7 +675,7 @@ async def otp_input(update: Update, context):
         await safe_send(update, "❌ Invalid OTP. Enter 6 digits.", parse_mode="HTML")
         return OTP
     
-    # Find the phone number associated with this OTP
+    # Find phone
     phone = None
     for p, (client, _) in pending_otp.items():
         if client.phone:
@@ -759,9 +695,9 @@ async def otp_input(update: Update, context):
     
     try:
         resp = client.verify_otp(otp)
-        logger.info(f"✅ Verification response: {json.dumps(resp, indent=2)}")
+        logger.info(f"✅ Verify response: {json.dumps(resp, indent=2)}")
     except Exception as e:
-        logger.error(f"❌ OTP verification error: {e}")
+        logger.error(f"❌ Verify error: {e}")
         await safe_send(update, f"❌ OTP verification failed: {str(e)}", parse_mode="HTML")
         return ConversationHandler.END
     
@@ -784,22 +720,20 @@ async def otp_input(update: Update, context):
     return ConversationHandler.END
 
 async def otp_fallback(update: Update, context):
-    """Manual OTP entry fallback command."""
+    """Manual OTP entry fallback – use if button flow fails."""
     args = context.args
     if len(args) < 2:
         await update.message.reply_text(
-            "📱 **Manual OTP Entry**\n\n"
-            "Usage: `/otp <phone> <otp>`\n"
-            "Example: `/otp +917008733564 123456`\n\n"
+            "📱 <b>Manual OTP Entry</b>\n\n"
+            "Usage: <code>/otp +917008733564 123456</code>\n\n"
             "Phone must include country code.",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
         return
     
     phone = args[0]
     otp = args[1]
     
-    # Clean phone
     if not phone.startswith("+"):
         phone = "+" + phone
     
@@ -809,7 +743,6 @@ async def otp_fallback(update: Update, context):
     
     logger.info(f"📱 Manual OTP for {phone}")
     
-    # Check if account exists
     conn = get_conn()
     c = conn.cursor()
     c.execute("SELECT id FROM accounts WHERE phone = ?", (phone,))
@@ -819,13 +752,12 @@ async def otp_fallback(update: Update, context):
         await update.message.reply_text("❌ This phone is already added.")
         return
     
-    # Create client and verify
     client = ShopsyClient(phone)
     try:
         resp = client.verify_otp(otp)
-        logger.info(f"📥 Manual verification response: {json.dumps(resp, indent=2)}")
+        logger.info(f"📥 Manual verify response: {json.dumps(resp, indent=2)}")
     except Exception as e:
-        logger.error(f"❌ Manual OTP verification error: {e}")
+        logger.error(f"❌ Manual verify error: {e}")
         await update.message.reply_text(f"❌ Verification failed: {str(e)}")
         return
     
@@ -839,16 +771,15 @@ async def otp_fallback(update: Update, context):
         acc_id = c.lastrowid
         conn.commit()
         conn.close()
-        log_action(acc_id, "ADD", "Account added via /otp fallback")
+        log_action(acc_id, "ADD", "Account added via /otp")
         await update.message.reply_text(
-            f"✅ **Account added successfully!**\n\n"
-            f"📱 `{phone}`\n"
+            f"✅ <b>Account added!</b>\n\n"
+            f"📱 <code>{phone}</code>\n"
             f"👤 {resp.get('name', 'User')}",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     else:
-        error_msg = resp.get('message', 'Unknown error')
-        await update.message.reply_text(f"❌ OTP failed: {error_msg}")
+        await update.message.reply_text(f"❌ OTP failed: {resp.get('message', 'Unknown error')}")
 
 async def file_input(update: Update, context):
     document = update.message.document
@@ -931,26 +862,25 @@ def main():
     try:
         resp = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
         if resp.status_code == 200:
-            logger.info("✅ Webhook deleted successfully")
+            logger.info("✅ Webhook deleted")
         else:
-            logger.warning(f"⚠️ Webhook deletion response: {resp.text}")
+            logger.warning(f"⚠️ Webhook response: {resp.text}")
     except Exception as e:
         logger.warning(f"⚠️ Could not delete webhook: {e}")
 
-    # REGISTER HANDLERS IN THE CORRECT ORDER
-    # 1. Command handlers
+    # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
     app.add_handler(CommandHandler("credits", credits_command))
-    app.add_handler(CommandHandler("otp", otp_fallback))  # <-- Manual OTP fallback
+    app.add_handler(CommandHandler("otp", otp_fallback))  # Manual fallback
 
-    # 2. Callback query handler - THIS MUST BE BEFORE CONVERSATION HANDLER
+    # Callback query handler
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    # 3. Message handlers
+    # Message handlers
     app.add_handler(MessageHandler(filters.Document.ALL, file_input))
 
-    # 4. Conversation handler - only for phone/OTP flow
+    # Conversation handler
     conv_handler = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(button_handler, pattern="^add_account$"),
@@ -972,9 +902,9 @@ def main():
     job_queue = app.job_queue
     if job_queue:
         job_queue.run_repeating(auto_farm_job, interval=3600, first=60)
-        logger.info("✅ JobQueue enabled – auto-farm scheduled")
+        logger.info("✅ JobQueue enabled")
     else:
-        logger.warning("⚠️ JobQueue not available – auto-farm disabled")
+        logger.warning("⚠️ JobQueue not available")
 
     logger.info("Bot started polling...")
     app.run_polling()
